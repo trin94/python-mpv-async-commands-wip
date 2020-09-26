@@ -22,14 +22,14 @@ def get_process_address(_, name):
 
 class MainClass(Gtk.Window):
 
-    def __init__(self, media):
+    def __init__(self, media, mpv_commands_async):
         super(MainClass, self).__init__()
         self.media = media
         self.set_default_size(600, 400)
         self.connect("destroy", self.on_destroy)
 
         frame = Gtk.Frame()
-        self.area = OpenGlArea()
+        self.area = OpenGlArea(mpv_commands_async)
         self.area.connect("realize", self.play)
         frame.add(self.area)
         self.add(frame)
@@ -51,8 +51,9 @@ class MainClass(Gtk.Window):
 
 class OpenGlArea(Gtk.GLArea):
 
-    def __init__(self, **properties):
+    def __init__(self, mpv_commands_async: bool, **properties):
         super().__init__(**properties)
+        self.mpv_commands_async = mpv_commands_async
 
         self._proc_addr_wrapper = OpenGlCbGetProcAddrFn(get_process_address)
 
@@ -111,11 +112,15 @@ class OpenGlArea(Gtk.GLArea):
         return False
 
     def play(self, media):
+        self.mpv.command_async("script-binding", "stats/display-stats-toggle")
         self.mpv.play(media)
 
     def on_mouse_move_event(self, _, event) -> bool:
         scale_factor = self.get_scale_factor()
-        self.mpv.command_async("mouse", int(event.x * scale_factor), int(event.y * scale_factor))
+        if self.mpv_commands_async:
+            self.mpv.command_async("mouse", int(event.x * scale_factor), int(event.y * scale_factor))
+        else:
+            self.mpv.command("mouse", int(event.x * scale_factor), int(event.y * scale_factor))
         return True
 
     def on_button_press_event(self, _, event) -> bool:
@@ -126,7 +131,10 @@ class OpenGlArea(Gtk.GLArea):
         # UP = "keyup"
 
         if btn == 1:  # MouseButton LEFT:
-            self.mpv.command_async("keydown", "MOUSE_BTN" + str(0))
+            if self.mpv_commands_async:
+                self.mpv.command_async("keydown", "MOUSE_BTN" + str(0))
+            else:
+                self.mpv.command("keydown", "MOUSE_BTN" + str(0))
             return True
 
         return False
@@ -135,7 +143,10 @@ class OpenGlArea(Gtk.GLArea):
         btn = event.button
 
         if btn == 1:
-            self.mpv.command_async("keyup", "MOUSE_BTN" + str(0))
+            if self.mpv_commands_async:
+                self.mpv.command_async("keyup", "MOUSE_BTN" + str(0))
+            else:
+                self.mpv.command("keyup", "MOUSE_BTN" + str(0))
             return True
 
         return False
@@ -145,9 +156,5 @@ if __name__ == '__main__':
     import locale
 
     locale.setlocale(locale.LC_NUMERIC, 'C')
-
-    # 1. Steps to reproduce: run this script with a longer video
-    # 2. Move the mouse and seek until you get 'MemoryError: ('mpv event queue full' ...)'
-
-    application = MainClass(media='my-long-video.mkv')
+    application = MainClass(media='my-longer-video.mkv', mpv_commands_async=True)
     Gtk.main()
