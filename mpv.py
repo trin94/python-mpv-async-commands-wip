@@ -21,8 +21,8 @@ import ctypes.util
 import threading
 import os
 import sys
-from random import random
-from typing import Callable, Dict, List
+from random import randint
+from typing import Callable, Dict
 from warnings import warn
 from functools import partial, wraps
 from contextlib import contextmanager
@@ -458,7 +458,7 @@ class MpvEventCommand(Structure):
     _fields_ = [('result', MpvNode)]
 
     def as_dict(self, decoder=identity_decoder):
-        return {'result': self.result.node_value(identity_decoder)}
+        return {'result': self.result.node_value(decoder)}
 
 StreamReadFn = CFUNCTYPE(c_int64, c_void_p, POINTER(c_char), c_uint64)
 StreamSeekFn = CFUNCTYPE(c_int64, c_void_p, c_int64)
@@ -1064,7 +1064,7 @@ class MPV(object):
         """
         args = [name.encode('utf-8')] + [(arg if type(arg) is bytes else str(arg).encode('utf-8'))
                                          for arg in args if arg is not None] + [None]
-        key = int(random())
+        key = int(randint(0, 2147483647))
         self.__register_async_callback(key, callback)
         _mpv_command_async(self._event_handle, key, (c_char_p * len(args))(*args))
 
