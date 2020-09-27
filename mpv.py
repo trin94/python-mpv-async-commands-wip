@@ -21,6 +21,8 @@ import ctypes.util
 import threading
 import os
 import sys
+from random import random
+from typing import Callable, Dict, List
 from warnings import warn
 from functools import partial, wraps
 from contextlib import contextmanager
@@ -386,6 +388,7 @@ class MpvEvent(Structure):
 
     def as_dict(self, decoder=identity_decoder):
         dtype = {MpvEventID.END_FILE:               MpvEventEndFile,
+                MpvEventID.COMMAND_REPLY:           MpvEventCommand,
                 MpvEventID.PROPERTY_CHANGE:         MpvEventProperty,
                 MpvEventID.GET_PROPERTY_REPLY:      MpvEventProperty,
                 MpvEventID.LOG_MESSAGE:             MpvEventLogMessage,
@@ -450,6 +453,12 @@ class MpvEventClientMessage(Structure):
 
     def as_dict(self, decoder=identity_decoder):
         return { 'args': [ self.args[i].decode('utf-8') for i in range(self.num_args) ] }
+
+class MpvEventCommand(Structure):
+    _fields_ = [('result', MpvNode)]
+
+    def as_dict(self, decoder=identity_decoder):
+        return {'result': self.result.node_value(identity_decoder)}
 
 StreamReadFn = CFUNCTYPE(c_int64, c_void_p, POINTER(c_char), c_uint64)
 StreamSeekFn = CFUNCTYPE(c_int64, c_void_p, c_int64)
@@ -540,7 +549,6 @@ _handle_func('mpv_command',                 [POINTER(c_char_p)],                
 _handle_func('mpv_command_string',          [c_char_p, c_char_p],                       c_int, ec_errcheck)
 _handle_func('mpv_command_async',           [c_ulonglong, POINTER(c_char_p)],           c_int, ec_errcheck)
 _handle_func('mpv_command_node',            [POINTER(MpvNode), POINTER(MpvNode)],       c_int, ec_errcheck)
-# _handle_func('mpv_command_async',           [c_ulonglong, POINTER(MpvNode)],            c_int, ec_errcheck)
 
 _handle_func('mpv_set_property',            [c_char_p, MpvFormat, c_void_p],            c_int, ec_errcheck)
 _handle_func('mpv_set_property_string',     [c_char_p, c_char_p],                       c_int, ec_errcheck)
@@ -828,6 +836,7 @@ class MPV(object):
         self.lazy   = _DecoderPropertyProxy(self, lazy_decoder)
 
         self._event_callbacks = []
+        self._event_async_callbacks: Dict[int, Callable[[bool, any], None]] = {}
         self._event_handler_lock = threading.Lock()
         self._property_handlers = collections.defaultdict(lambda: [])
         self._quit_handlers = set()
@@ -879,6 +888,12 @@ class MPV(object):
                     target, *args = devent['event']['args']
                     if target in self._message_handlers:
                         self._message_handlers[target](*args)
+
+                if eid == MpvEventID.COMMAND_REPLY:
+                    key = devent['reply_userdata']
+                    callback = self._event_async_callbacks.pop(key, None)
+                    if callback:
+                        callback(devent['error'], devent['event']['result'])
 
                 if eid == MpvEventID.SHUTDOWN:
                     _mpv_detach_destroy(self._event_handle)
@@ -1040,11 +1055,18 @@ class MPV(object):
                 for arg in args if arg is not None ] + [None]
         _mpv_command(self.handle, (c_char_p*len(args))(*args))
 
-    def command_async(self, name, *args):
-        """Execute a raw command asynchronously."""
+    def command_async(self, name, *args, callback: Callable[[bool, any], None] = None):
+        """
+        Same as mpv_command, but run the command asynchronously.
+        Once the command ran, the callback will be invoked, if provided.
+        The first argument of the callback will be a boolean value indicating if the command ran successfully.
+        The second argument of the callback depends on the command.
+        """
         args = [name.encode('utf-8')] + [(arg if type(arg) is bytes else str(arg).encode('utf-8'))
                                          for arg in args if arg is not None] + [None]
-        _mpv_command_async(self.handle, 0, (c_char_p * len(args))(*args))
+        key = int(random())
+        self.__register_async_callback(key, callback)
+        _mpv_command_async(self._event_handle, key, (c_char_p * len(args))(*args))
 
     def node_command(self, name, *args, decoder=strict_decoder):
         _1, _2, _3, pointer = _make_node_str_list([name, *args])
@@ -1819,6 +1841,10 @@ class MPV(object):
             return self._get_property('option-info/'+name)
         except AttributeError:
             return None
+
+    def __register_async_callback(self, key: int, callback: Callable[[bool, any], None]):
+        self._event_async_callbacks[key] = callback
+
 
 class MpvRenderContext:
     def __init__(self, mpv, api_type, **kwargs):
